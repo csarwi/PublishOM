@@ -218,6 +218,7 @@ function Invoke-7ZipArchive {
         ('-mx=' + [string]$CompressionLevel),
         '-y',
         '-bd',                  # no progress bar -> less stderr noise
+        '-scsUTF-8',
         ('"' + $localTmpPath + '"'),
         $quotedListArg
     ) -join ' '
@@ -317,45 +318,42 @@ foreach ($v in $versions) {
         continue
     }
 
-    # Build @listfile with relative paths prefixed by the top-level folder name
-    $parentDir = Split-Path -Path $v.FullPath -Parent
-    $listFile = [System.IO.Path]::GetTempFileName()
+# Build @listfile with relative paths prefixed by the top-level folder name
+$parentDir = Split-Path -Path $v.FullPath -Parent
+$listFile  = [System.IO.Path]::GetTempFileName()
 
     try {
-        # Use the system ANSI codepage (preserves umlauts without BOM)
-        $enc = [System.Text.Encoding]::Default
-        $sw = New-Object System.IO.StreamWriter($listFile, $false, $enc)
+        # UTF-8 *without* BOM so 7-Zip reads it cleanly with -scsUTF-8
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $sw = New-Object System.IO.StreamWriter($listFile, $false, $utf8NoBom)
         try {
             foreach ($f in $files) {
                 $rel = $f.FullName.Substring($v.FullPath.Length).TrimStart('\', '/')
                 $rel = $rel -replace '/', '\'
-                $entry = Join-Path $folderName $rel   # includes the space in "OM 15.x.x" — OK
+                $entry = Join-Path $folderName $rel
                 $sw.Write($entry)
-                $sw.Write("`r`n")                     # CRLF
+                $sw.Write("`r`n")   # CRLF
             }
         }
         finally {
             $sw.Dispose()
         }
 
-        if (Test-Path $zipTmp) { Remove-Item -LiteralPath $zipTmp -Force }
+        if (Test-Path -LiteralPath $zipTmp) { Remove-Item -LiteralPath $zipTmp -Force }
 
         Write-Host "Creating zip: $zipPath"
         Invoke-7ZipArchive -SevenZipPath $sevenZip -WorkingDir $parentDir -ListFilePath $listFile -ZipOutPathTmp $zipTmp
 
         # Wait briefly for the UNC tmp to appear, then rename
-        for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $zipTmp); $i++) { Start-Sleep -Milliseconds 500 }
+        for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $zipTmp); $i++) { Start-Sleep -Milliseconds 100 }
         if (-not (Test-Path -LiteralPath $zipTmp)) { throw "Expected temp archive not found after 7-Zip: $zipTmp" }
 
-        if (Test-Path $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
         Move-Item -LiteralPath $zipTmp -Destination $zipPath -Force
-
-        $null = Write-ManifestFiles -Files $files -VersionFolder $v.FullPath -FolderName $folderName -BaseOutPath $baseOut
-
     }
     finally {
-        if (Test-Path $listFile) { Remove-Item -LiteralPath $listFile -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $zipTmp) { Remove-Item -LiteralPath $zipTmp   -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $listFile) { Remove-Item -LiteralPath $listFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $zipTmp) { Remove-Item -LiteralPath $zipTmp   -Force -ErrorAction SilentlyContinue }
     }
 
 }
@@ -401,4 +399,13 @@ foreach ($z in $publishZips) {
     }
 }
 
+# --- Generate plain index.html ---
+$indexPath = Join-Path $PublishRoot 'index.html'
+$zips = Get-ChildItem -Path $PublishRoot -Filter 'OM*.zip' | Sort-Object Name
+$zips.Name | Set-Content -Path $indexPath -Encoding UTF8
+Write-Host "Wrote plain index: $indexPath"
+
+
 Write-Host "All done."
+
+
